@@ -39,33 +39,32 @@ This benchmark compares various CUDA matrix loading strategies across different 
 
 ## Results
 
-Matrix Size     Best Method               Time (ms)    BW (GB/s)    2nd Best Method           2nd Min (ms)
----------------------------------------------------------------------------------------------------------
-1024x8          Element-wise              0.002        25.30        Float8 vectorized         0.0020
-1024x32         Float2 vectorized         0.002        100.65       Float4 vectorized         0.0020
-1024x64         Float4 vectorized         0.002        208.23       Float8 vectorized         0.0020
-1024x128        Float8 vectorized         0.002        412.07       Float4 vectorized         0.0020
-1024x256        Coalesced float8          0.003        743.24       Coalesced float4          0.0020
-1024x512        Float4 vectorized         0.003        1358.45      Coalesced float8          0.0020
-16384x8         Coalesced float4          0.003        311.98       Coalesced float8          0.0028
-16384x32        Float2 vectorized         0.004        1067.61      Float8 vectorized         0.0031
-16384x64        Coalesced float4          0.005        1703.70      Float4 vectorized         0.0031
-16384x128       Float8 vectorized         0.007        2270.86      Float4 vectorized         0.0061
-16384x256       Float8 vectorized         0.007        4176.56      Coalesced float8          0.0072
-16384x512       Coalesced float8          0.008        7852.07      Float8 vectorized         0.0072
-262144x8        Coalesced float8          0.008        2021.53      Coalesced float4          0.0072
-262144x32       Coalesced float8          0.008        7629.99      Coalesced float4          0.0092
-262144x64       Coalesced float8          0.010        12184.19     Float8 vectorized         0.0133
-262144x128      Coalesced float8          0.011        22427.80     Float8 vectorized         0.0102
-262144x256      Float8 vectorized         0.020        25610.56     Coalesced float8          0.0194
-262144x512      Float8 vectorized         0.034        29477.24     Coalesced float8          0.0337
-1048576x8       Coalesced float8          0.005        13711.91     Coalesced float4          0.0061
-1048576x32      Coalesced float8          0.010        23822.96     Coalesced float4          0.0174
-1048576x64      Coalesced float8          0.019        26951.74     Float8 vectorized         0.0336
-1048576x128     Float8 vectorized         0.034        29546.92     Coalesced float8          0.0338
-1048576x256     Float8 vectorized         0.065        30601.25     Coalesced float8          0.0655
-1048576x512     Float8 vectorized         0.128        31203.04     Coalesced float8          0.1288
-
+| Matrix Size | Best Method | Time (ms) | BW (GB/s) | 2nd Best Method | 2nd Min (ms) |
+|-------------|-------------|-----------|-----------|-----------------|--------------|
+| 1024x8 | Element-wise | 0.009 | 6.73 | Coalesced column | 0.0082 |
+| 1024x32 | Float8 vectorized | 0.009 | 26.32 | Shared memory tiled | 0.0082 |
+| 1024x64 | Shared memory tiled | 0.009 | 52.63 | CUB device load | 0.0082 |
+| 1024x128 | Shared memory tiled | 0.007 | 131.09 | Coalesced float4 | 0.0065 |
+| 1024x256 | Coalesced float4 | 0.008 | 259.95 | Shared memory tiled | 0.0072 |
+| 1024x512 | Coalesced float4 | 0.008 | 520.20 | Coalesced row | 0.0072 |
+| 16384x8 | Coalesced float4 | 0.007 | 132.00 | Coalesced column | 0.0072 |
+| 16384x32 | Coalesced float4 | 0.007 | 523.95 | Coalesced row | 0.0071 |
+| 16384x64 | Coalesced float8 | 0.007 | 1045.21 | Coalesced float4 | 0.0071 |
+| 16384x128 | Coalesced float8 | 0.007 | 2089.17 | Float8 vectorized | 0.0063 |
+| 16384x256 | Float8 vectorized | 0.008 | 4159.83 | Coalesced float8 | 0.0072 |
+| 16384x512 | Coalesced float8 | 0.007 | 8365.99 | Float8 vectorized | 0.0072 |
+| 262144x8 | Coalesced float8 | 0.004 | 3698.54 | Coalesced float4 | 0.0041 |
+| 262144x32 | Coalesced float8 | 0.005 | 12615.46 | Coalesced float4 | 0.0068 |
+| 262144x64 | Coalesced float8 | 0.007 | 18061.08 | Float4 vectorized | 0.0102 |
+| 262144x128 | Float8 vectorized | 0.011 | 22609.54 | Coalesced float8 | 0.0102 |
+| 262144x256 | Float8 vectorized | 0.020 | 25577.86 | Coalesced float8 | 0.0193 |
+| 262144x512 | Float8 vectorized | 0.034 | 29350.99 | Coalesced float8 | 0.0338 |
+| 1048576x8 | Coalesced float8 | 0.004 | 13990.87 | Coalesced float4 | 0.0061 |
+| 1048576x32 | Coalesced float8 | 0.011 | 23668.50 | Coalesced float4 | 0.0178 |
+| 1048576x64 | Coalesced float8 | 0.018 | 27254.49 | Float4 vectorized | 0.0335 |
+| 1048576x128 | Float8 vectorized | 0.034 | 29481.69 | Coalesced float8 | 0.0338 |
+| 1048576x256 | Float8 vectorized | 0.065 | 30597.66 | Coalesced float8 | 0.0655 |
+| 1048576x512 | Float8 vectorized | 0.128 | 31191.67 | Coalesced float8 | 0.1299 |
 
 ## Setup
 

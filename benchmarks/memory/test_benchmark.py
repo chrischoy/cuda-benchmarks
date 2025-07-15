@@ -128,10 +128,13 @@ def analyze_comprehensive_results(results):
                 )
 
     # Find best and second best methods for each size
+    print("\n## Best Performance Methods by Matrix Size")
     print(
-        f"\n{'Matrix Size':<15} {'Best Method':<25} {'Time (ms)':<12} {'BW (GB/s)':<12} {'2nd Best Method':<25} {'2nd Min (ms)':<12}"
+        "\n| Matrix Size | Best Method | Time (ms) | BW (GB/s) | 2nd Best Method | 2nd Min (ms) |"
     )
-    print("-" * 105)
+    print(
+        "|-------------|-------------|-----------|-----------|-----------------|--------------|"
+    )
 
     for size, methods in results.items():
         # Sort methods by bandwidth to get best and second best
@@ -157,7 +160,7 @@ def analyze_comprehensive_results(results):
                 second_best_min_time = f"{second_best_data['min_time_ms']:.4f}"
 
             print(
-                f"{size_str:<15} {best_data['method']:<25} {best_data['mean_time_ms']:<12.3f} {best_data['bandwidth_gb_s']:<12.2f} {second_best_method:<25} {second_best_min_time:<12}"
+                f"| {size_str} | {best_data['method']} | {best_data['mean_time_ms']:.3f} | {best_data['bandwidth_gb_s']:.2f} | {second_best_method} | {second_best_min_time} |"
             )
 
 
