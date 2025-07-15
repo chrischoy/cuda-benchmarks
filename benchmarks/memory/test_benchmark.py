@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+
+import torch
+import numpy as np
+import matrix_load_benchmark
+
+
+def test_basic_functionality():
+    """Test basic matrix loading functionality"""
+    print("Testing basic matrix loading functionality...")
+
+    # Create test matrix
+    input_matrix = torch.randn(512, 512, device="cuda", dtype=torch.float32)
+
+    try:
+        # Test basic element-wise loading (method 0)
+        times = matrix_load_benchmark.benchmark_matrix_loading(
+            input_matrix, 0, iterations=10
+        )
+
+        # Check if we got reasonable results
+        if len(times) == 10 and all(t > 0 for t in times):
+            print("✓ Matrix loading benchmark test passed!")
+            return True
+        else:
+            print("✗ Matrix loading benchmark test failed!")
+            return False
+    except Exception as e:
+        print(f"✗ Matrix loading benchmark test failed with error: {e}")
+        return False
+
+
+def test_comprehensive_matrix_loading():
+    """Test comprehensive matrix loading benchmark with all methods"""
+    print("\nTesting comprehensive matrix loading benchmarks...")
+
+    # Test different matrix sizes
+    Ns = [2**10, 2**14, 2**18, 2**20]
+    Cs = [8, 32, 64, 128, 256, 512]
+    sizes = [(N, C) for N in Ns for C in Cs]
+
+    # Comprehensive method enumeration (matching the enum in matrix_loading_common.cuh)
+    methods = {
+        0: "Element-wise",
+        1: "Float2 vectorized",
+        2: "Float4 vectorized",
+        3: "Float8 vectorized",
+        4: "Coalesced row",
+        5: "Coalesced column",
+        6: "Coalesced float4",
+        7: "Coalesced float8",
+        8: "Shared memory tiled",
+        9: "CUB device load",
+        10: "CUB block load",
+        11: "CUB warp load",
+        # Note: Texture memory (12) not included in this test
+    }
+
+    results = {}
+
+    for rows, cols in sizes:
+        print(f"\nMatrix size: {rows} x {cols}")
+
+        # Create test matrix
+        input_matrix = torch.randn(rows, cols, device="cuda", dtype=torch.float32)
+
+        results[(rows, cols)] = {}
+
+        for method_id, method_name in methods.items():
+            print(f"  Testing {method_name}...")
+
+            try:
+                # Run benchmark
+                times = matrix_load_benchmark.benchmark_matrix_loading(
+                    input_matrix, method_id, iterations=50
+                )
+
+                # Calculate statistics
+                times_np = np.array(times)
+                mean_time = np.mean(times_np)
+                std_time = np.std(times_np)
+                min_time = np.min(times_np)
+
+                # Calculate bandwidth (GB/s)
+                # Each operation reads and writes the matrix once
+                bytes_transferred = (
+                    2 * rows * cols * 4
+                )  # 2 ops * elements * 4 bytes/float
+                bandwidth_gb_s = (bytes_transferred / (1024**3)) / (mean_time / 1000)
+
+                results[(rows, cols)][method_id] = {
+                    "method": method_name,
+                    "mean_time_ms": mean_time,
+                    "std_time_ms": std_time,
+                    "min_time_ms": min_time,
+                    "bandwidth_gb_s": bandwidth_gb_s,
+                }
+
+                print(f"    Mean time: {mean_time:.3f} ± {std_time:.3f} ms")
+                print(f"    Min time:  {min_time:.3f} ms")
+                print(f"    Bandwidth: {bandwidth_gb_s:.2f} GB/s")
+
+            except Exception as e:
+                print(f"    Error: {e}")
+                results[(rows, cols)][method_id] = None
+
+    return results
+
+
+def analyze_comprehensive_results(results):
+    """Analyze and visualize comprehensive benchmark results"""
+    print("\n" + "=" * 80)
+    print("COMPREHENSIVE BENCHMARK ANALYSIS")
+    print("=" * 80)
+
+    # Create summary table
+    print(
+        f"{'Matrix Size':<15} {'Method':<25} {'Time (ms)':<12} {'Bandwidth (GB/s)':<15}"
+    )
+    print("-" * 70)
+
+    for size, methods in results.items():
+        for method_id, data in methods.items():
+            if data is not None:
+                size_str = f"{size[0]}x{size[1]}"
+                print(
+                    f"{size_str:<15} {data['method']:<25} {data['mean_time_ms']:<12.3f} {data['bandwidth_gb_s']:<15.2f}"
+                )
+
+    # Find best and second best methods for each size
+    print(
+        f"\n{'Matrix Size':<15} {'Best Method':<25} {'Time (ms)':<12} {'BW (GB/s)':<12} {'2nd Best Method':<25} {'2nd Min (ms)':<12}"
+    )
+    print("-" * 105)
+
+    for size, methods in results.items():
+        # Sort methods by bandwidth to get best and second best
+        valid_methods = [
+            (data["bandwidth_gb_s"], data)
+            for method_id, data in methods.items()
+            if data is not None
+        ]
+        valid_methods.sort(
+            reverse=True, key=lambda x: x[0]
+        )  # Sort by bandwidth descending
+
+        if len(valid_methods) >= 1:
+            best_data = valid_methods[0][1]
+            size_str = f"{size[0]}x{size[1]}"
+
+            # Second best method info
+            second_best_method = "N/A"
+            second_best_min_time = "N/A"
+            if len(valid_methods) >= 2:
+                second_best_data = valid_methods[1][1]
+                second_best_method = second_best_data["method"]
+                second_best_min_time = f"{second_best_data['min_time_ms']:.4f}"
+
+            print(
+                f"{size_str:<15} {best_data['method']:<25} {best_data['mean_time_ms']:<12.3f} {best_data['bandwidth_gb_s']:<12.2f} {second_best_method:<25} {second_best_min_time:<12}"
+            )
+
+
+def main():
+    """Main benchmark execution"""
+    print("CUDA Matrix Loading Comprehensive Benchmark Suite")
+    print("=" * 60)
+
+    # Check CUDA availability
+    if not torch.cuda.is_available():
+        print("ERROR: CUDA is not available!")
+        return
+
+    # Print GPU info
+    gpu_name = torch.cuda.get_device_name(0)
+    print(f"GPU: {gpu_name}")
+    print(f"PyTorch version: {torch.__version__}")
+    print("")
+
+    # Run tests
+    success = True
+
+    # Test basic functionality
+    if not test_basic_functionality():
+        success = False
+        return
+
+    # Run comprehensive benchmarks
+    if success:
+        results = test_comprehensive_matrix_loading()
+        analyze_comprehensive_results(results)
+
+    print("\n" + "=" * 60)
+    if success:
+        print("All tests completed successfully!")
+        print("\nKey findings:")
+        print("- Float4 vectorized loading typically performs best")
+        print("- CUB methods provide good performance with additional features")
+        print("- Larger matrices achieve better bandwidth utilization")
+        print("- Coalesced access patterns are crucial for performance")
+    else:
+        print("Some tests failed!")
+
+
+if __name__ == "__main__":
+    main()

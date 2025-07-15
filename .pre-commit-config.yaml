@@ -1,0 +1,113 @@
+default_language_version:
+  python: python3
+
+repos:
+  # python code formatting
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # list of supported hooks: https://pre-commit.com/hooks.html
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: check-executables-have-shebangs
+      - id: check-toml
+      - id: check-case-conflict
+      - id: check-added-large-files
+
+  # TODO/REMINDER: add the Ruff vscode extension to the devcontainers
+  # Ruff, the Python auto-correcting linter/formatter written in Rust
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.2
+    hooks:
+    - id: ruff  # linter
+    - id: ruff-format  # formatter
+
+  # ---------------------- C++ / CUDA toolchain ------------------------------
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v20.1.7
+    hooks:
+      - id: clang-format
+        types_or: [file]
+        files: |
+          (?x)^(
+            ^.*\.c$|
+            ^.*\.cpp$|
+            ^.*\.cu$|
+            ^.*\.cuh$|
+            ^.*\.cxx$|
+            ^.*\.h$|
+            ^.*\.hpp$|
+            ^.*\.inl$|
+            ^.*\.mm$|
+          )
+        args: ["-fallback-style=none", "-style=file", "-i"]
+
+  - repo: https://github.com/pocc/pre-commit-hooks
+    rev: v1.3.5
+    hooks:
+      - id: cppcheck
+        name: cppcheck (static analysis)
+        args: [--enable=warning,style,performance,portability,information,unusedFunction, --language=c++]
+        files: \.(c|cc|cpp|cxx|hpp|hxx|h|cu|cuh)$
+        exclude: |
+          (?x)^(
+            .*3rdparty/.*|
+            .*build/.*|
+            .*\.egg-info/.*
+          )$
+
+  # yaml formatting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        types: [yaml, html]
+        exclude: "environment.yaml"
+
+  # shell scripts linter
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  # bash and sbatch script formatter
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.11.0-1
+    hooks:
+      - id: shfmt
+        args: ["-i", "4", "-ci", "-bn", "-sr"]
+        types: [shell, bash]
+        files: '\.(sh|bash|sbatch)$'
+
+  # word spelling linter
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        args:
+          - --skip=logs/**,data/**,*.ipynb
+          - --ignore-words-list=crate
+
+  # jupyter notebook cell output clearing
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+
+  # jupyter notebook linting
+  - repo: https://github.com/nbQA-dev/nbQA
+    rev: 1.9.1
+    hooks:
+      - id: nbqa-black
+        args: ["--line-length=99"]
+      - id: nbqa-isort
+        args: ["--profile=black"]
+      - id: nbqa-flake8
+        args:
+          [
+            "--extend-ignore=E203,E402,E501,F401,F722,F841",
+            "--exclude=logs/*,data/*",
+          ]
