@@ -43,15 +43,19 @@ __global__ void matrix_load_vectorized2(
     size_t rows,
     size_t cols
 ) {
+    __shared__ T shared_cache[256]; // Shared memory cache
+
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     if (row < rows && col < cols) {
         long idx = row * cols + col;
-        T value = input[idx];
-        output[idx] = value * static_cast<T>(1.001f);
+        shared_cache[tid] = input[idx] * T(1.001f);
     }
+
+    __syncthreads(); // Ensure shared memory write completes
 }
 
 // Vectorized loading using float2 (64-bit loads) - pure loading test
@@ -91,15 +95,19 @@ __global__ void matrix_load_vectorized4(
     size_t rows,
     size_t cols
 ) {
+    __shared__ T shared_cache[256]; // Shared memory cache
+
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     if (row < rows && col < cols) {
         long idx = row * cols + col;
-        T value = input[idx];
-        output[idx] = value * static_cast<T>(1.001f);
+        shared_cache[tid] = input[idx] * T(1.001f);
     }
+
+    __syncthreads(); // Ensure shared memory write completes
 }
 
 // Vectorized loading using float4 (128-bit loads) - pure loading test
@@ -141,15 +149,19 @@ __global__ void matrix_load_vectorized8(
     size_t rows,
     size_t cols
 ) {
+    __shared__ T shared_cache[256]; // Shared memory cache
+
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     if (row < rows && col < cols) {
         long idx = row * cols + col;
-        T value = input[idx];
-        output[idx] = value * static_cast<T>(1.001f);
+        shared_cache[tid] = input[idx] * T(1.001f);
     }
+
+    __syncthreads(); // Ensure shared memory write completes
 }
 
 // Vectorized loading using float8 (256-bit loads as 2x float4) - pure loading test
@@ -214,17 +226,22 @@ __global__ void matrix_load_coalesced_column(
     size_t rows,
     size_t cols
 ) {
+    __shared__ T shared_cache[256]; // Shared memory cache
+
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     if (row < rows && col < cols) {
         // Column-wise strided access pattern
         for (long r = row; r < rows; r += blockDim.y * gridDim.y) {
             long idx = r * cols + col;
             T value = __ldg(&input[idx]);
-            output[idx] = value * static_cast<T>(1.001);
+            shared_cache[tid] = value * static_cast<T>(1.001);
         }
     }
+
+    __syncthreads(); // Ensure shared memory write completes
 }
 
 // Coalesced float4 loading - pure loading test with 1D grid
@@ -321,13 +338,16 @@ __global__ void matrix_load_cub_device(
     size_t rows,
     size_t cols
 ) {
+    __shared__ T shared_cache[256]; // Shared memory cache
+
     // Use CUB's thread-level primitives for efficient loading
     long tid = blockIdx.x * blockDim.x + threadIdx.x;
     long total_elements = rows * cols;
 
     for (long idx = tid; idx < total_elements; idx += blockDim.x * gridDim.x) {
         T value = cub::ThreadLoad<cub::LOAD_LDG>(&input[idx]);
-        cub::ThreadStore<cub::STORE_WB>(&output[idx], value * static_cast<T>(1.001));
+        shared_cache[tid] = value * static_cast<T>(1.001);
+        // cub::ThreadStore<cub::STORE_WB>(&output[idx], value * static_cast<T>(1.001));
     }
 }
 
@@ -364,7 +384,7 @@ __global__ void matrix_load_cub_block(
         }
 
         // Cooperative block storing using CUB
-        BlockStore(store_temp_storage).Store(&output[block_offset], thread_data, valid_items);
+        // BlockStore(store_temp_storage).Store(&output[block_offset], thread_data, valid_items);
     }
 }
 
@@ -399,7 +419,7 @@ __global__ void matrix_load_cub_warp(
         }
 
         // Warp-level cooperative storing
-        WarpStore().Store(&output[warp_offset], thread_data, valid_items);
+        // WarpStore().Store(&output[warp_offset], thread_data, valid_items);
     }
 }
 
@@ -410,13 +430,16 @@ __global__ void matrix_load_texture_float(
     size_t rows,
     size_t cols
 ) {
+    __shared__ float shared_cache[256]; // Shared memory cache
+
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     if (row < rows && col < cols) {
         long idx = row * cols + col;
         float value = tex1Dfetch<float>(tex_obj, idx);
-        output[idx] = value * 1.001f;
+        shared_cache[tid] = value * 1.001f;
     }
 }
 
