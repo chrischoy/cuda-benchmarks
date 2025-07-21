@@ -19,7 +19,7 @@ __global__ void matrix_load_elementwise(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -43,7 +43,7 @@ __global__ void matrix_load_vectorized2(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -66,7 +66,7 @@ __global__ void matrix_load_vectorized2<float>(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float2 shared_cache[256]; // Match block size (16x16=256 threads)
+    __shared__ float2 shared_cache[1024]; // Match block size (16x16=256 threads)
 
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
@@ -95,7 +95,7 @@ __global__ void matrix_load_vectorized4(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -118,7 +118,7 @@ __global__ void matrix_load_vectorized4<float>(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float4 shared_cache[256]; // Match block size (16x16=256 threads)
+    __shared__ float4 shared_cache[1024]; // Match block size (16x16=256 threads)
 
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
@@ -149,7 +149,7 @@ __global__ void matrix_load_vectorized8(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     // Default implementation for non-specialized types - fall back to elementwise
     long row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -172,7 +172,7 @@ __global__ void matrix_load_vectorized8<float>(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float8 shared_cache[256]; // Match block size (16x16=256 threads)
+    __shared__ float8 shared_cache[1024]; // Match block size (16x16=256 threads)
 
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = (blockIdx.x * blockDim.x + threadIdx.x) * 8;
@@ -203,7 +203,7 @@ __global__ void matrix_load_coalesced_row(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     long tid = blockIdx.x * blockDim.x + threadIdx.x;
     long local_tid = threadIdx.x;
@@ -251,7 +251,7 @@ __global__ void matrix_load_coalesced_float4(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float4 shared_cache[256]; // Shared memory cache
+    __shared__ float4 shared_cache[1024]; // Shared memory cache
 
     long tid = blockIdx.x * blockDim.x + threadIdx.x;
     long local_tid = threadIdx.x;
@@ -278,7 +278,7 @@ __global__ void matrix_load_coalesced_float8(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float8 shared_cache[256]; // Shared memory cache
+    __shared__ float8 shared_cache[1024]; // Shared memory cache
 
     ulong tid = blockIdx.x * blockDim.x + threadIdx.x;
     ulong local_tid = threadIdx.x;
@@ -338,7 +338,7 @@ __global__ void matrix_load_cub_device(
     size_t rows,
     size_t cols
 ) {
-    __shared__ T shared_cache[256]; // Shared memory cache
+    __shared__ T shared_cache[1024]; // Shared memory cache
 
     // Use CUB's thread-level primitives for efficient loading
     long tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -430,7 +430,7 @@ __global__ void matrix_load_texture_float(
     size_t rows,
     size_t cols
 ) {
-    __shared__ float shared_cache[256]; // Shared memory cache
+    __shared__ float shared_cache[1024]; // Shared memory cache
 
     long row = blockIdx.y * blockDim.y + threadIdx.y;
     long col = blockIdx.x * blockDim.x + threadIdx.x;

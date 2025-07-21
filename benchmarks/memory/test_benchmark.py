@@ -6,6 +6,17 @@ import argparse
 import matrix_load_benchmark
 import matrix_store_benchmark
 
+# Import CuTe load benchmarks
+try:
+    from cute_load import run_cute_load_benchmark, CUTE_AVAILABLE
+    import cutlass
+
+    CUTLASS_FLOAT32 = cutlass.Float32
+except ImportError:
+    CUTE_AVAILABLE = False
+    CUTLASS_FLOAT32 = None
+    print("Warning: CuTe DSL not available. Skipping CuTe benchmarks.")
+
 
 def test_basic_functionality(verbose=True):
     """Test basic matrix loading and storing functionality"""
@@ -85,7 +96,7 @@ def test_comprehensive_matrix_loading(verbose=True):
     sizes = [(N, C) for N in Ns for C in Cs]
 
     # Comprehensive method enumeration (matching the enum in matrix_loading_common.cuh)
-    methods = {
+    cuda_methods = {
         0: "Element-wise",
         1: "Float2 vectorized",
         2: "Float4 vectorized",
@@ -100,6 +111,17 @@ def test_comprehensive_matrix_loading(verbose=True):
         11: "CUB warp load",
         # Note: Texture memory (12) not included in this test
     }
+
+    # Add CuTe DSL methods if available
+    if CUTE_AVAILABLE:
+        cute_methods = {
+            "cute_elementwise": "CuTe Elementwise",
+            "cute_vectorized": "CuTe Vectorized",
+            # "cute_tiled": "CuTe Tiled (Shared Memory)"  # Commented out due to memory alignment issues
+        }
+        methods = {**cuda_methods, **cute_methods}
+    else:
+        methods = cuda_methods
 
     results = {}
 
@@ -117,36 +139,68 @@ def test_comprehensive_matrix_loading(verbose=True):
                 print(f"  Testing {method_name}...")
 
             try:
-                # Run benchmark
-                times = matrix_load_benchmark.benchmark_matrix_loading(
-                    input_matrix, method_id, iterations=50
-                )
+                # Check if this is a CuTe method
+                if isinstance(method_id, str) and method_id.startswith("cute_"):
+                    # Handle CuTe methods
+                    if not CUTE_AVAILABLE or CUTLASS_FLOAT32 is None:
+                        raise RuntimeError("CuTe DSL not available")
 
-                # Calculate statistics
-                times_np = np.array(times)
-                mean_time = np.mean(times_np)
-                std_time = np.std(times_np)
-                min_time = np.min(times_np)
+                    cute_method = method_id.replace("cute_", "")
+                    mean_time, bandwidth_gb_s = run_cute_load_benchmark(
+                        M=rows,
+                        N=cols,
+                        dtype=CUTLASS_FLOAT32,
+                        method=cute_method,
+                        iterations=50,
+                        warmup_iterations=10,
+                        verbose=False,
+                    )
 
-                # Calculate bandwidth (GB/s)
-                # Each operation reads and writes the matrix once
-                bytes_transferred = (
-                    2 * rows * cols * 4
-                )  # 2 ops * elements * 4 bytes/float
-                bandwidth_gb_s = (bytes_transferred / (1024**3)) / (mean_time / 1000)
+                    results[(rows, cols)][method_id] = {
+                        "method": method_name,
+                        "mean_time_ms": mean_time,
+                        "std_time_ms": 0.0,  # CuTe benchmark doesn't return std
+                        "min_time_ms": mean_time,  # Use mean as min for consistency
+                        "bandwidth_gb_s": bandwidth_gb_s,
+                    }
 
-                results[(rows, cols)][method_id] = {
-                    "method": method_name,
-                    "mean_time_ms": mean_time,
-                    "std_time_ms": std_time,
-                    "min_time_ms": min_time,
-                    "bandwidth_gb_s": bandwidth_gb_s,
-                }
+                    if verbose:
+                        print(f"    Mean time: {mean_time:.3f} ms")
+                        print(f"    Bandwidth: {bandwidth_gb_s:.2f} GB/s")
 
-                if verbose:
-                    print(f"    Mean time: {mean_time:.3f} ± {std_time:.3f} ms")
-                    print(f"    Min time:  {min_time:.3f} ms")
-                    print(f"    Bandwidth: {bandwidth_gb_s:.2f} GB/s")
+                else:
+                    # Handle traditional CUDA methods
+                    times = matrix_load_benchmark.benchmark_matrix_loading(
+                        input_matrix, method_id, iterations=50
+                    )
+
+                    # Calculate statistics
+                    times_np = np.array(times)
+                    mean_time = np.mean(times_np)
+                    std_time = np.std(times_np)
+                    min_time = np.min(times_np)
+
+                    # Calculate bandwidth (GB/s)
+                    # Each operation reads and writes the matrix once
+                    bytes_transferred = (
+                        2 * rows * cols * 4
+                    )  # 2 ops * elements * 4 bytes/float
+                    bandwidth_gb_s = (bytes_transferred / (1024**3)) / (
+                        mean_time / 1000
+                    )
+
+                    results[(rows, cols)][method_id] = {
+                        "method": method_name,
+                        "mean_time_ms": mean_time,
+                        "std_time_ms": std_time,
+                        "min_time_ms": min_time,
+                        "bandwidth_gb_s": bandwidth_gb_s,
+                    }
+
+                    if verbose:
+                        print(f"    Mean time: {mean_time:.3f} ± {std_time:.3f} ms")
+                        print(f"    Min time:  {min_time:.3f} ms")
+                        print(f"    Bandwidth: {bandwidth_gb_s:.2f} GB/s")
 
             except Exception as e:
                 if verbose:
@@ -255,7 +309,7 @@ def analyze_comprehensive_results(results):
             if data is not None:
                 size_str = f"{size[0]}x{size[1]}"
                 print(
-                    f"{size_str:<15} {data['method']:<25} {data['mean_time_ms']:<12.3f} {data['bandwidth_gb_s']:<15.2f}"
+                    f"{size_str:<15} {data['method']:<25} {data['min_time_ms']:<12.3f} {data['bandwidth_gb_s']:<15.2f}"
                 )
 
     # Find best and second best methods for each size
@@ -291,7 +345,7 @@ def analyze_comprehensive_results(results):
                 second_best_min_time = f"{second_best_data['min_time_ms']:.4f}"
 
             print(
-                f"| {size_str} | {best_data['method']} | {best_data['mean_time_ms']:.4f} | {best_data['bandwidth_gb_s']:.2f} | {second_best_method} | {second_best_min_time} |"
+                f"| {size_str} | {best_data['method']} | {best_data['min_time_ms']:.4f} | {best_data['bandwidth_gb_s']:.2f} | {second_best_method} | {second_best_min_time} |"
             )
 
 
@@ -315,13 +369,49 @@ def main():
         default=False,
         help="Suppress intermediate output (opposite of --verbose)",
     )
+
+    # Benchmark selection arguments
+    benchmark_group = parser.add_argument_group("benchmark selection")
+    benchmark_group.add_argument(
+        "--load", action="store_true", help="Run load benchmarks only"
+    )
+    benchmark_group.add_argument(
+        "--store", action="store_true", help="Run store benchmarks only"
+    )
+    benchmark_group.add_argument(
+        "--cute", action="store_true", help="Run CuTe DSL benchmarks only"
+    )
+    benchmark_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all benchmark types (default if no specific type selected)",
+    )
     args = parser.parse_args()
 
     # Determine verbosity (--quiet overrides --verbose)
     verbose = args.verbose and not args.quiet
 
+    # Determine which benchmarks to run
+    # CuTe is now integrated into load benchmarks
+    run_load = args.load or args.cute or args.all
+    run_store = args.store or args.all
+    run_cute = args.cute or args.all
+
+    # If no specific benchmark selected, run all
+    if not (args.load or args.store or args.cute or args.all):
+        run_load = run_store = run_cute = True
+
     print("CUDA Matrix Memory Operations Comprehensive Benchmark Suite")
-    print("(Load + Store Benchmarks)")
+
+    # Print which benchmarks will run
+    benchmark_types = []
+    if run_load:
+        benchmark_types.append("Load")
+    if run_store:
+        benchmark_types.append("Store")
+    if run_cute:
+        benchmark_types.append("CuTe DSL")
+    print(f"({' + '.join(benchmark_types)} Benchmarks)")
     print("=" * 70)
 
     # Check CUDA availability
@@ -345,19 +435,30 @@ def main():
         success = False
         return
 
-    # Run comprehensive benchmarks
+    # Run comprehensive benchmarks based on selection
     if success:
-        print("\n" + "=" * 60)
-        print("RUNNING COMPREHENSIVE LOAD BENCHMARKS")
-        print("=" * 60)
-        load_results = test_comprehensive_matrix_loading(verbose=verbose)
-        analyze_comprehensive_results(load_results)
+        if run_load:
+            print("\n" + "=" * 60)
+            print("RUNNING COMPREHENSIVE LOAD BENCHMARKS")
+            print("=" * 60)
+            load_results = test_comprehensive_matrix_loading(verbose=verbose)
+            analyze_comprehensive_results(load_results)
 
-        print("\n" + "=" * 60)
-        print("RUNNING COMPREHENSIVE STORE BENCHMARKS")
-        print("=" * 60)
-        store_results = test_comprehensive_matrix_storing(verbose=verbose)
-        analyze_comprehensive_results(store_results)
+        if run_store:
+            print("\n" + "=" * 60)
+            print("RUNNING COMPREHENSIVE STORE BENCHMARKS")
+            print("=" * 60)
+            store_results = test_comprehensive_matrix_storing(verbose=verbose)
+            analyze_comprehensive_results(store_results)
+
+        # Show message if CuTe was requested but not available
+        if run_cute and not CUTE_AVAILABLE and not run_load:
+            print("\n" + "=" * 60)
+            print("CUTE DSL BENCHMARKS REQUESTED BUT NOT AVAILABLE")
+            print("=" * 60)
+            print(
+                "Install CuTe DSL with: pip install nvidia-cutlass nvidia-cutlass-dsl"
+            )
 
 
 if __name__ == "__main__":
