@@ -443,6 +443,72 @@ __global__ void matrix_load_texture_float(
     }
 }
 
+// PTX float4 loading kernel using ld.global.v4.f32
+__global__ void matrix_load_ptx_float4(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    __shared__ float4 shared_cache[256]; // Match block size (16x16=256 threads)
+
+    long row = blockIdx.y * blockDim.y + threadIdx.y;
+    long col = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
+
+    if (row < rows && col + 3 < cols) {
+        long idx = row * cols + col;
+
+        // Load 4 floats using PTX ld.global.v4.f32 instruction
+        float4 values;
+        asm volatile("ld.global.v4.f32 {%0, %1, %2, %3}, [%4];"
+                     : "=f"(values.x), "=f"(values.y), "=f"(values.z), "=f"(values.w)
+                     : "l"((const float*)&input[idx]));
+
+        // Minimal processing and store in shared memory
+        values.x *= 1.001f;
+        values.y *= 1.001f;
+        values.z *= 1.001f;
+        values.w *= 1.001f;
+        shared_cache[tid] = values;
+    }
+
+    __syncthreads(); // Ensure shared memory write completes
+}
+
+// PTX float4 loading kernel using ld.global.nc.v4.f32 (non-cached)
+__global__ void matrix_load_ptx_float4_nc(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    __shared__ float4 shared_cache[256]; // Match block size (16x16=256 threads)
+
+    long row = blockIdx.y * blockDim.y + threadIdx.y;
+    long col = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
+
+    if (row < rows && col + 3 < cols) {
+        long idx = row * cols + col;
+
+        // Load 4 floats using PTX ld.global.nc.v4.f32 instruction (non-cached)
+        float4 values;
+        asm volatile("ld.global.nc.v4.f32 {%0, %1, %2, %3}, [%4];"
+                     : "=f"(values.x), "=f"(values.y), "=f"(values.z), "=f"(values.w)
+                     : "l"((const float*)&input[idx]));
+
+        // Minimal processing and store in shared memory
+        values.x *= 1.001f;
+        values.y *= 1.001f;
+        values.z *= 1.001f;
+        values.w *= 1.001f;
+        shared_cache[tid] = values;
+    }
+
+    __syncthreads(); // Ensure shared memory write completes
+}
+
 // =============================================================================
 // BENCHMARK FUNCTION
 // =============================================================================
@@ -516,6 +582,14 @@ std::vector<float> benchmark_matrix_loading(
                 matrix_load_cub_warp<float><<<grid_size, block_size>>>(
                     input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
                 break;
+            case PTX_FLOAT4:
+                matrix_load_ptx_float4<<<grid_size, block_size>>>(
+                    input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4_NC:
+                matrix_load_ptx_float4_nc<<<grid_size, block_size>>>(
+                    input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
+                break;
             default:
                 matrix_load_elementwise<float><<<grid_size, block_size>>>(
                     input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
@@ -582,6 +656,14 @@ std::vector<float> benchmark_matrix_loading(
                 break;
             case CUB_WARP_LOAD:
                 matrix_load_cub_warp<float><<<grid_size, block_size>>>(
+                    input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4:
+                matrix_load_ptx_float4<<<grid_size, block_size>>>(
+                    input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4_NC:
+                matrix_load_ptx_float4_nc<<<grid_size, block_size>>>(
                     input.data_ptr<float>(), output.data_ptr<float>(), rows, cols);
                 break;
             default:

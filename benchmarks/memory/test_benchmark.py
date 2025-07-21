@@ -99,6 +99,8 @@ def test_comprehensive_matrix_loading(verbose=True):
         10: "CUB block load",
         11: "CUB warp load",
         # Note: Texture memory (12) not included in this test
+        13: "PTX float4 ld.global",
+        14: "PTX float4 ld.global.nc",
     }
 
     results = {}

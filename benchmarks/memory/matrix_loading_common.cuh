@@ -22,7 +22,9 @@ enum LoadingMethod {
     CUB_DEVICE_LOAD = 9,       // CUB device-wide load operations
     CUB_BLOCK_LOAD = 10,       // CUB block-level load operations
     CUB_WARP_LOAD = 11,        // CUB warp-level load operations
-    TEXTURE_MEMORY = 12        // Texture memory access pattern
+    TEXTURE_MEMORY = 12,       // Texture memory access pattern
+    PTX_FLOAT4 = 13,           // PTX ld.global.v4.f32 instruction
+    PTX_FLOAT4_NC = 14         // PTX ld.global.nc.v4.f32 (non-cached) instruction
 };
 
 // Launch configuration utilities
@@ -54,6 +56,9 @@ __host__ inline dim3 calculate_optimal_block_size(int loading_method) {
             return dim3(256);
         case TEXTURE_MEMORY:
             return dim3(16, 16);
+        case PTX_FLOAT4:
+        case PTX_FLOAT4_NC:
+            return dim3(16, 16);
         default:
             return dim3(16, 16);
     }
@@ -78,7 +83,9 @@ __host__ inline dim3 calculate_optimal_grid_size(size_t rows, size_t cols, int l
             int grid_y = max(1, min(MAX_GRID_SIZE_Y, (int)((rows + block_size.y - 1) / block_size.y)));
             return dim3(grid_x, grid_y);
         }
-        case VECTORIZED_FLOAT4: {
+        case VECTORIZED_FLOAT4:
+        case PTX_FLOAT4:
+        case PTX_FLOAT4_NC: {
             // Each thread processes 4 elements in X direction
             int grid_x = max(1, min(MAX_GRID_SIZE_X, (int)((cols/4 + block_size.x - 1) / block_size.x)));
             int grid_y = max(1, min(MAX_GRID_SIZE_Y, (int)((rows + block_size.y - 1) / block_size.y)));
@@ -142,6 +149,8 @@ __host__ inline const char* get_method_name(int method) {
         case CUB_BLOCK_LOAD: return "CUB block load";
         case CUB_WARP_LOAD: return "CUB warp load";
         case TEXTURE_MEMORY: return "Texture memory";
+        case PTX_FLOAT4: return "PTX float4 ld.global";
+        case PTX_FLOAT4_NC: return "PTX float4 ld.global.nc";
         default: return "Unknown";
     }
 }
