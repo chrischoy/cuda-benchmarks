@@ -7,7 +7,7 @@ setup(
         CUDAExtension(
             name="matrix_load_benchmark",
             sources=["load.cu"],
-            include_dirs=["../../include"],
+            include_dirs=["../../include", "../../3rdparty/cccl"],
             extra_compile_args={
                 "nvcc": ["-O2", "--expt-relaxed-constexpr", "--extended-lambda"],
                 "cxx": ["-O2"],
@@ -16,7 +16,7 @@ setup(
         CUDAExtension(
             name="matrix_store_benchmark",
             sources=["store.cu"],
-            include_dirs=["../../include"],
+            include_dirs=["../../include", "../../3rdparty/cccl"],
             extra_compile_args={
                 "nvcc": ["-O2", "--expt-relaxed-constexpr", "--extended-lambda"],
                 "cxx": ["-O2"],

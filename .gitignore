@@ -1,0 +1,123 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# CUDA build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.d
+*.elf
+*.bin
+*.ptx
+*.cubin
+*.fatbin
+*.cudafe1.*
+*.cudafe2.*
+
+# CMake build directories
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Cursor IDE
+.cursor/
+
+# Cache and temporary files
+*.cache
+*.tmp
+*.temp
+compiled_cache.db
+
+# Benchmark results and data files
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!*.json.example
+!*.json.template
+
+# Plot and image files (if they're generated)
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.svg
+# *.pdf
+
+# Log files
+*.log
+*.out
+*.err
+
+# Backup files
+*.backup
+*.bak
+*.old
+*.orig
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Submodule content (if you want to ignore submodule changes)
+# Uncomment if you want to ignore submodule content
+# 3rdparty/*/
+
+# Test and temporary directories
+test_*/
+temp/
+tmp/

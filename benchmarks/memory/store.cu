@@ -5,6 +5,15 @@
 #include "matrix_loading_common.cuh"
 #include "vector_types.cuh"
 
+// CUB includes for optimal storing
+#include <cub/block/block_load.cuh>
+#include <cub/block/block_store.cuh>
+#include <cub/warp/warp_load.cuh>
+#include <cub/warp/warp_store.cuh>
+#include <cub/thread/thread_load.cuh>
+#include <cub/thread/thread_store.cuh>
+#include <cub/iterator/cache_modified_input_iterator.cuh>
+
 using namespace cuda_benchmark::memory;
 
 // =============================================================================
@@ -21,19 +30,24 @@ __global__ void matrix_store_elementwise(
     const int MAX_THREADS = 1024; // Maximum threads per block
     __shared__ T shared_cache[MAX_THREADS]; // Dynamic shared memory for data generation
 
-    long row = blockIdx.y * blockDim.y + threadIdx.y;
-    long col = blockIdx.x * blockDim.x + threadIdx.x;
     long tid = threadIdx.y * blockDim.x + threadIdx.x;
-    long block_size = blockDim.x * blockDim.y * blockDim.z;
+    long total_elements = rows * cols;
 
-    if (row < rows && col < cols && tid < block_size) {
-        long idx = row * cols + col;
-        // Generate data in shared memory first
+    // Generate data in shared memory first
+    if (tid < MAX_THREADS) {
         shared_cache[tid] = static_cast<T>(1.0f);
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // Pure storing test - write 1s to global memory
-        output[idx] = shared_cache[tid];
+    // Loop-based approach to handle large matrices that exceed grid limits
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    for (long idx = thread_id; idx < total_elements; idx += total_threads) {
+        if (tid < MAX_THREADS) {
+            output[idx] = shared_cache[tid];
+        }
     }
 }
 
@@ -71,20 +85,25 @@ __global__ void matrix_store_vectorized2<float>(
     const int MAX_THREADS = 1024;
     __shared__ float2 shared_cache[MAX_THREADS]; // Proper block size handling
 
-    long row = blockIdx.y * blockDim.y + threadIdx.y;
-    long col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
     long tid = threadIdx.y * blockDim.x + threadIdx.x;
-    long block_size = blockDim.x * blockDim.y * blockDim.z;
+    long total_elements = rows * cols;
 
-    if (row < rows && col + 1 < cols && tid < block_size) {
-        long idx = row * cols + col;
-
-        // Generate data in shared memory
+    // Generate data in shared memory
+    if (tid < MAX_THREADS) {
         shared_cache[tid] = make_float2(1.0f, 1.0f);
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // Store 2 floats at once using vectorized instruction
-        *reinterpret_cast<float2*>(&output[idx]) = shared_cache[tid];
+    // Loop-based approach with vectorized access
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    // Each thread processes 2 elements at a time
+    for (long base_idx = thread_id * 2; base_idx + 1 < total_elements; base_idx += total_threads * 2) {
+        if (tid < MAX_THREADS) {
+            *reinterpret_cast<float2*>(&output[base_idx]) = shared_cache[tid];
+        }
     }
 }
 
@@ -119,19 +138,25 @@ __global__ void matrix_store_vectorized4<float>(
 ) {
     __shared__ float4 shared_cache[256]; // Match block size (16x16=256 threads)
 
-    long row = blockIdx.y * blockDim.y + threadIdx.y;
-    long col = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
     long tid = threadIdx.y * blockDim.x + threadIdx.x;
+    long total_elements = rows * cols;
 
-    if (row < rows && col + 3 < cols) {
-        long idx = row * cols + col;
-
-        // Generate data in shared memory
+    // Generate data in shared memory
+    if (tid < 256) {
         shared_cache[tid] = make_float4(1.0f, 1.0f, 1.0f, 1.0f);
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // Store 4 floats at once using vectorized instruction
-        *reinterpret_cast<float4*>(&output[idx]) = shared_cache[tid];
+    // Loop-based approach with vectorized access
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    // Each thread processes 4 elements at a time
+    for (long base_idx = thread_id * 4; base_idx + 3 < total_elements; base_idx += total_threads * 4) {
+        if (tid < 256) {
+            *reinterpret_cast<float4*>(&output[base_idx]) = shared_cache[tid];
+        }
     }
 }
 
@@ -167,20 +192,25 @@ __global__ void matrix_store_vectorized8<float>(
     const int MAX_THREADS = 1024;
     __shared__ float8 shared_cache[MAX_THREADS]; // Proper block size handling
 
-    long row = blockIdx.y * blockDim.y + threadIdx.y;
-    long col = (blockIdx.x * blockDim.x + threadIdx.x) * 8;
     long tid = threadIdx.y * blockDim.x + threadIdx.x;
-    long block_size = blockDim.x * blockDim.y * blockDim.z;
+    long total_elements = rows * cols;
 
-    if (row < rows && col + 7 < cols && tid < block_size) {
-        long idx = row * cols + col;
-
-        // Generate data in shared memory
+    // Generate data in shared memory
+    if (tid < MAX_THREADS) {
         shared_cache[tid] = make_float8(1.0f);
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // Store 8 floats at once using two vectorized float4 instructions
-        store_float8(&output[idx], shared_cache[tid]);
+    // Loop-based approach with vectorized access
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    // Each thread processes 8 elements at a time
+    for (long base_idx = thread_id * 8; base_idx + 7 < total_elements; base_idx += total_threads * 8) {
+        if (tid < MAX_THREADS) {
+            store_float8(&output[base_idx], shared_cache[tid]);
+        }
     }
 }
 
@@ -312,41 +342,60 @@ __global__ void matrix_store_shared_memory(
     }
 }
 
-// CUB Device-level storing operations
+// CUB Device-level storing operations - optimized with cache modifiers
 template<typename T>
 __global__ void matrix_store_cub_device(
     T* __restrict__ output,
     size_t rows,
     size_t cols
 ) {
-    const int MAX_THREADS = 1024;
-    __shared__ T shared_cache[MAX_THREADS]; // Shared memory for data generation
+    __shared__ T shared_cache[1024]; // Shared memory for data generation
 
-    // Use CUB's thread-level primitives for efficient storing
+    // Use CUB's thread-level primitives with optimal cache modifiers
     long tid = blockIdx.x * blockDim.x + threadIdx.x;
-    long local_tid = threadIdx.x; // Use LOCAL thread ID for shared memory
     long total_elements = rows * cols;
-    long block_size = blockDim.x * blockDim.y * blockDim.z;
 
-    // Generate data in shared memory using LOCAL thread ID
-    if (local_tid < block_size) {
-        shared_cache[local_tid] = static_cast<T>(1.0f);
-    }
+    // Generate data in shared memory
+    shared_cache[threadIdx.x] = static_cast<T>(1.0f);
     __syncthreads();
 
-    // Use the local thread's data for all global memory stores
     for (long idx = tid; idx < total_elements; idx += blockDim.x * gridDim.x) {
-        cub::ThreadStore<cub::STORE_WB>(&output[idx], shared_cache[local_tid]);
+        // Use STORE_WB for write-back cache policy (optimal for storing)
+        cub::ThreadStore<cub::STORE_WB>(&output[idx], shared_cache[threadIdx.x]);
     }
 }
 
-// CUB Block-level storing operations
+// CUB Device-level storing with cache-modified operations
+template<typename T>
+__global__ void matrix_store_cub_device_cache_modified(
+    T* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    __shared__ T shared_cache[1024]; // Shared memory for data generation
+
+    long tid = blockIdx.x * blockDim.x + threadIdx.x;
+    long total_elements = rows * cols;
+
+    // Generate data in shared memory
+    shared_cache[threadIdx.x] = static_cast<T>(1.0f);
+    __syncthreads();
+
+    for (long idx = tid; idx < total_elements; idx += blockDim.x * gridDim.x) {
+        // Use ThreadStore with cache modifier for optimal storing
+        cub::ThreadStore<cub::STORE_WB>(&output[idx], shared_cache[threadIdx.x]);
+    }
+}
+
+// CUB Block-level storing operations - optimized with vectorization
 template<typename T, int BLOCK_SIZE = 256>
 __global__ void matrix_store_cub_block(
     T* __restrict__ output,
     size_t rows,
     size_t cols
 ) {
+    // Use BLOCK_STORE_VECTORIZE for optimal performance when data is aligned
+    // and ITEMS_PER_THREAD is even (4 items per thread)
     typedef cub::BlockStore<T, BLOCK_SIZE, 4, cub::BLOCK_STORE_VECTORIZE> BlockStore;
 
     __shared__ typename BlockStore::TempStorage store_temp_storage;
@@ -365,25 +414,91 @@ __global__ void matrix_store_cub_block(
 
         __syncthreads();
 
-        // Cooperative block storing using CUB
+        // Cooperative block storing using CUB with vectorization
         long valid_items = min(BLOCK_SIZE * 4, int(total_elements - block_offset));
         BlockStore(store_temp_storage).Store(&output[block_offset], thread_data, valid_items);
     }
 }
 
-// CUB Warp-level storing operations
+// CUB Block-level storing with warp transpose for better coalescing
+template<typename T, int BLOCK_SIZE = 256>
+__global__ void matrix_store_cub_block_warp_transpose(
+    T* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    // Use BLOCK_STORE_WARP_TRANSPOSE for optimal memory coalescing
+    // when BLOCK_THREADS is a multiple of warp size (32)
+    static_assert(BLOCK_SIZE % 32 == 0, "BLOCK_SIZE must be a multiple of warp size (32)");
+    typedef cub::BlockStore<T, BLOCK_SIZE, 4, cub::BLOCK_STORE_WARP_TRANSPOSE> BlockStore;
+
+    __shared__ typename BlockStore::TempStorage store_temp_storage;
+
+    long block_offset = blockIdx.x * BLOCK_SIZE * 4;
+    long total_elements = rows * cols;
+
+    if (block_offset < total_elements) {
+        T thread_data[4];
+
+        // Generate data to store
+        #pragma unroll
+        for (long i = 0; i < 4; ++i) {
+            thread_data[i] = static_cast<T>(1.0f);
+        }
+
+        __syncthreads();
+
+        // Cooperative block storing using warp-striped pattern then transpose
+        long valid_items = min(BLOCK_SIZE * 4, int(total_elements - block_offset));
+        BlockStore(store_temp_storage).Store(&output[block_offset], thread_data, valid_items);
+    }
+}
+
+// CUB Block-level storing with striped transpose for maximum coalescing
+template<typename T, int BLOCK_SIZE = 256>
+__global__ void matrix_store_cub_block_striped_transpose(
+    T* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    // Use BLOCK_STORE_TRANSPOSE for maximum memory coalescing regardless of items per thread
+    typedef cub::BlockStore<T, BLOCK_SIZE, 4, cub::BLOCK_STORE_TRANSPOSE> BlockStore;
+
+    __shared__ typename BlockStore::TempStorage store_temp_storage;
+
+    long block_offset = blockIdx.x * BLOCK_SIZE * 4;
+    long total_elements = rows * cols;
+
+    if (block_offset < total_elements) {
+        T thread_data[4];
+
+        // Generate data to store
+        #pragma unroll
+        for (long i = 0; i < 4; ++i) {
+            thread_data[i] = static_cast<T>(1.0f);
+        }
+
+        __syncthreads();
+
+        // Cooperative block storing using striped pattern then transpose to blocked
+        long valid_items = min(BLOCK_SIZE * 4, int(total_elements - block_offset));
+        BlockStore(store_temp_storage).Store(&output[block_offset], thread_data, valid_items);
+    }
+}
+
+// CUB Warp-level storing operations - optimized with vectorization
 template<typename T>
 __global__ void matrix_store_cub_warp(
     T* __restrict__ output,
     size_t rows,
     size_t cols
 ) {
+    // Use WARP_STORE_VECTORIZE for optimal performance when data is aligned
     typedef cub::WarpStore<T, 4, cub::WARP_STORE_VECTORIZE> WarpStore;
 
     const int WARP_SIZE = 32;
-    int warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
-    int lane_id = threadIdx.x % WARP_SIZE;
-    int warp_offset = warp_id * WARP_SIZE * 4;
+    long warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+    long warp_offset = warp_id * WARP_SIZE * 4;
     long total_elements = rows * cols;
 
     if (warp_offset < total_elements) {
@@ -395,9 +510,105 @@ __global__ void matrix_store_cub_warp(
             thread_data[i] = static_cast<T>(1.0f);
         }
 
-        // Warp-level cooperative storing
+        // Warp-level cooperative storing with vectorization
         long valid_items = min(WARP_SIZE * 4, int(total_elements - warp_offset));
         WarpStore().Store(&output[warp_offset], thread_data, valid_items);
+    }
+}
+
+// CUB Warp-level storing with striped pattern for better coalescing
+template<typename T>
+__global__ void matrix_store_cub_warp_striped(
+    T* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    // Use WARP_STORE_STRIPED for optimal memory coalescing
+    typedef cub::WarpStore<T, 4, cub::WARP_STORE_STRIPED> WarpStore;
+
+    const int WARP_SIZE = 32;
+    long warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+    long warp_offset = warp_id * WARP_SIZE * 4;
+    long total_elements = rows * cols;
+
+    if (warp_offset < total_elements) {
+        T thread_data[4];
+
+        // Generate data to store
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            thread_data[i] = static_cast<T>(1.0f);
+        }
+
+        // Warp-level cooperative storing with striped pattern
+        long valid_items = min(WARP_SIZE * 4, int(total_elements - warp_offset));
+        WarpStore().Store(&output[warp_offset], thread_data, valid_items);
+    }
+}
+
+// PTX float4 storing kernel using st.global.v4.f32
+__global__ void matrix_store_ptx_float4(
+    float* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    __shared__ float4 shared_cache[1024]; // Match block size (16x16=256 threads)
+
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
+    long total_elements = rows * cols;
+
+    // Generate data in shared memory
+    if (tid < 1024) {
+        shared_cache[tid] = make_float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+    __syncthreads();
+
+    // Loop-based approach with PTX instructions
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    // Each thread processes 4 elements at a time
+    for (long base_idx = thread_id * 4; base_idx + 3 < total_elements; base_idx += total_threads * 4) {
+        if (tid < 1024) {
+            // Store 4 floats using PTX st.global.v4.f32 instruction
+            asm volatile("st.global.v4.f32 [%0], {%1, %2, %3, %4};"
+                         :: "l"((float*)&output[base_idx]), "f"(shared_cache[tid].x),
+                            "f"(shared_cache[tid].y), "f"(shared_cache[tid].z), "f"(shared_cache[tid].w));
+        }
+    }
+}
+
+// PTX float4 storing kernel using st.global.wb.v4.f32 (write-back)
+__global__ void matrix_store_ptx_float4_wb(
+    float* __restrict__ output,
+    size_t rows,
+    size_t cols
+) {
+    __shared__ float4 shared_cache[1024]; // Match block size (16x16=256 threads)
+
+    long tid = threadIdx.y * blockDim.x + threadIdx.x;
+    long total_elements = rows * cols;
+
+    // Generate data in shared memory
+    if (tid < 1024) {
+        shared_cache[tid] = make_float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+    __syncthreads();
+
+    // Loop-based approach with PTX instructions
+    long thread_id = blockIdx.y * gridDim.x * blockDim.x * blockDim.y +
+                     blockIdx.x * blockDim.x * blockDim.y + tid;
+    long total_threads = gridDim.x * gridDim.y * blockDim.x * blockDim.y;
+
+    // Each thread processes 4 elements at a time
+    for (long base_idx = thread_id * 4; base_idx + 3 < total_elements; base_idx += total_threads * 4) {
+        if (tid < 1024) {
+            // Store 4 floats using PTX st.global.wb.v4.f32 instruction (write-back)
+            asm volatile("st.global.wb.v4.f32 [%0], {%1, %2, %3, %4};"
+                         :: "l"((float*)&output[base_idx]), "f"(shared_cache[tid].x),
+                            "f"(shared_cache[tid].y), "f"(shared_cache[tid].z), "f"(shared_cache[tid].w));
+        }
     }
 }
 
@@ -464,12 +675,36 @@ std::vector<float> benchmark_matrix_storing(
                 matrix_store_cub_device<float><<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
+            case CUB_DEVICE_CACHE_MODIFIED:
+                matrix_store_cub_device_cache_modified<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
             case CUB_BLOCK_LOAD:
                 matrix_store_cub_block<float, 256><<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
+            case CUB_BLOCK_WARP_TRANSPOSE:
+                matrix_store_cub_block_warp_transpose<float, 256><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case CUB_BLOCK_STRIPED_TRANSPOSE:
+                matrix_store_cub_block_striped_transpose<float, 256><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
             case CUB_WARP_LOAD:
                 matrix_store_cub_warp<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case CUB_WARP_STRIPED:
+                matrix_store_cub_warp_striped<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4:
+                matrix_store_ptx_float4<<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4_NC:
+                matrix_store_ptx_float4_wb<<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
             default:
@@ -532,12 +767,36 @@ std::vector<float> benchmark_matrix_storing(
                 matrix_store_cub_device<float><<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
+            case CUB_DEVICE_CACHE_MODIFIED:
+                matrix_store_cub_device_cache_modified<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
             case CUB_BLOCK_LOAD:
                 matrix_store_cub_block<float, 256><<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
+            case CUB_BLOCK_WARP_TRANSPOSE:
+                matrix_store_cub_block_warp_transpose<float, 256><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case CUB_BLOCK_STRIPED_TRANSPOSE:
+                matrix_store_cub_block_striped_transpose<float, 256><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
             case CUB_WARP_LOAD:
                 matrix_store_cub_warp<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case CUB_WARP_STRIPED:
+                matrix_store_cub_warp_striped<float><<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4:
+                matrix_store_ptx_float4<<<grid_size, block_size>>>(
+                    output.data_ptr<float>(), rows, cols);
+                break;
+            case PTX_FLOAT4_NC:
+                matrix_store_ptx_float4_wb<<<grid_size, block_size>>>(
                     output.data_ptr<float>(), rows, cols);
                 break;
             default:

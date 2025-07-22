@@ -22,22 +22,26 @@ enum LoadingMethod {
     CUB_DEVICE_LOAD = 9,       // CUB device-wide load operations
     CUB_BLOCK_LOAD = 10,       // CUB block-level load operations
     CUB_WARP_LOAD = 11,        // CUB warp-level load operations
-    TEXTURE_MEMORY = 12,       // Texture memory access pattern
-    PTX_FLOAT4 = 13,           // PTX ld.global.v4.f32 instruction
-    PTX_FLOAT4_NC = 14         // PTX ld.global.nc.v4.f32 (non-cached) instruction
+    CUB_DEVICE_CACHE_MODIFIED = 12, // CUB device-wide load with cache-modified iterators
+    CUB_BLOCK_WARP_TRANSPOSE = 13,  // CUB block-level load with warp transpose
+    CUB_BLOCK_STRIPED_TRANSPOSE = 14, // CUB block-level load with striped transpose
+    CUB_WARP_STRIPED = 15,     // CUB warp-level load with striped pattern
+    TEXTURE_MEMORY = 16,       // Texture memory access pattern
+    PTX_FLOAT4 = 17,           // PTX ld.global.v4.f32 instruction
+    PTX_FLOAT4_NC = 18         // PTX ld.global.nc.v4.f32 (non-cached) instruction
 };
 
 // Launch configuration utilities
 __host__ inline dim3 calculate_optimal_block_size(int loading_method) {
     switch(loading_method) {
         case ELEMENTWISE:
-            return dim3(16, 16);
+            return dim3(32, 32);  // Use 32x32 to reduce grid Y dimension
         case VECTORIZED_FLOAT2:
-            return dim3(16, 16);
+            return dim3(256);
         case VECTORIZED_FLOAT4:
-            return dim3(16, 16);
+            return dim3(256);
         case VECTORIZED_FLOAT8:
-            return dim3(16, 16);
+            return dim3(256);
         case COALESCED_ROW:
             return dim3(256);
         case COALESCED_COLUMN:
@@ -49,10 +53,14 @@ __host__ inline dim3 calculate_optimal_block_size(int loading_method) {
         case SHARED_MEMORY_TILED:
             return dim3(32, 32);
         case CUB_DEVICE_LOAD:
+        case CUB_DEVICE_CACHE_MODIFIED:
             return dim3(256);
         case CUB_BLOCK_LOAD:
+        case CUB_BLOCK_WARP_TRANSPOSE:
+        case CUB_BLOCK_STRIPED_TRANSPOSE:
             return dim3(256);
         case CUB_WARP_LOAD:
+        case CUB_WARP_STRIPED:
             return dim3(256);
         case TEXTURE_MEMORY:
             return dim3(16, 16);
@@ -78,29 +86,33 @@ __host__ inline dim3 calculate_optimal_grid_size(size_t rows, size_t cols, int l
             return dim3(grid_x, grid_y);
         }
         case VECTORIZED_FLOAT2: {
-            // Each thread processes 2 elements in X direction
-            int grid_x = max(1, min(MAX_GRID_SIZE_X, (int)((cols/2 + block_size.x - 1) / block_size.x)));
-            int grid_y = max(1, min(MAX_GRID_SIZE_Y, (int)((rows + block_size.y - 1) / block_size.y)));
-            return dim3(grid_x, grid_y);
+            // Each thread processes 2 elements - use same pattern as COALESCED_FLOAT4
+            size_t elements_per_thread = (rows * cols + 1) / 2;  // Ceiling division by 2
+            int grid_x = min(MAX_GRID_SIZE_X, (int)((elements_per_thread + block_size.x - 1) / block_size.x));
+            return dim3(grid_x);
         }
         case VECTORIZED_FLOAT4:
         case PTX_FLOAT4:
         case PTX_FLOAT4_NC: {
-            // Each thread processes 4 elements in X direction
-            int grid_x = max(1, min(MAX_GRID_SIZE_X, (int)((cols/4 + block_size.x - 1) / block_size.x)));
-            int grid_y = max(1, min(MAX_GRID_SIZE_Y, (int)((rows + block_size.y - 1) / block_size.y)));
-            return dim3(grid_x, grid_y);
+            // Each thread processes 4 elements - use same pattern as COALESCED_FLOAT4
+            size_t elements_per_thread = (rows * cols + 3) / 4;  // Ceiling division by 4
+            int grid_x = min(MAX_GRID_SIZE_X, (int)((elements_per_thread + block_size.x - 1) / block_size.x));
+            return dim3(grid_x);
         }
         case VECTORIZED_FLOAT8: {
-            // Each thread processes 8 elements in X direction
-            int grid_x = max(1, min(MAX_GRID_SIZE_X, (int)((cols/8 + block_size.x - 1) / block_size.x)));
-            int grid_y = max(1, min(MAX_GRID_SIZE_Y, (int)((rows + block_size.y - 1) / block_size.y)));
-            return dim3(grid_x, grid_y);
+            // Each thread processes 8 elements - use same pattern as COALESCED_FLOAT4
+            size_t elements_per_thread = (rows * cols + 7) / 8;  // Ceiling division by 8
+            int grid_x = min(MAX_GRID_SIZE_X, (int)((elements_per_thread + block_size.x - 1) / block_size.x));
+            return dim3(grid_x);
         }
         case COALESCED_ROW:
         case CUB_DEVICE_LOAD:
+        case CUB_DEVICE_CACHE_MODIFIED:
         case CUB_BLOCK_LOAD:
-        case CUB_WARP_LOAD: {
+        case CUB_BLOCK_WARP_TRANSPOSE:
+        case CUB_BLOCK_STRIPED_TRANSPOSE:
+        case CUB_WARP_LOAD:
+        case CUB_WARP_STRIPED: {
             int grid_x = min(MAX_GRID_SIZE_X, (int)((rows * cols + block_size.x - 1) / block_size.x));
             return dim3(grid_x);
         }
@@ -146,8 +158,12 @@ __host__ inline const char* get_method_name(int method) {
         case COALESCED_FLOAT8: return "Coalesced float8";
         case SHARED_MEMORY_TILED: return "Shared memory tiled";
         case CUB_DEVICE_LOAD: return "CUB device load";
+        case CUB_DEVICE_CACHE_MODIFIED: return "CUB device cache-modified";
         case CUB_BLOCK_LOAD: return "CUB block load";
+        case CUB_BLOCK_WARP_TRANSPOSE: return "CUB block warp-transpose";
+        case CUB_BLOCK_STRIPED_TRANSPOSE: return "CUB block striped-transpose";
         case CUB_WARP_LOAD: return "CUB warp load";
+        case CUB_WARP_STRIPED: return "CUB warp striped";
         case TEXTURE_MEMORY: return "Texture memory";
         case PTX_FLOAT4: return "PTX float4 ld.global";
         case PTX_FLOAT4_NC: return "PTX float4 ld.global.nc";
