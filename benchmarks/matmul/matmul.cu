@@ -5,12 +5,27 @@
 #include <cuda_bf16.h>
 #include <vector>
 #include <cstdint>
+#include <cstdlib>
 
 #include "matmul_common.cuh"
 #include "../../include/vector_types.cuh"
 
 using namespace cuda_benchmark::matmul;
 using namespace nvcuda;
+#if 1
+// Forward declarations to link to wrappers in matmul_wmma_sm80.cu
+extern "C" {
+void launch_wmma_db_ampere_f16_f32(dim3, dim3, cudaStream_t,
+    const half*, const half*, const half*, const long*, const long*, float*, int, int, int, int, int);
+void launch_wmma_db_ampere_f16_f16(dim3, dim3, cudaStream_t,
+    const half*, const half*, const half*, const long*, const long*, half*, int, int, int, int, int);
+// Non-atomic store variants
+void launch_wmma_db_ampere_f16_f32_store(dim3, dim3, cudaStream_t,
+    const half*, const half*, const half*, const long*, const long*, float*, int, int, int, int, int);
+void launch_wmma_db_ampere_f16_f16_store(dim3, dim3, cudaStream_t,
+    const half*, const half*, const half*, const long*, const long*, half*, int, int, int, int, int);
+}
+#endif
 
 // Compute D[d_inds, :] += A[a_inds, :] @ B + C[a_inds, :]
 
@@ -138,6 +153,141 @@ __global__ void implicit_gemm_wmma_f16_acc_f32(
     }
 }
 
+#if 1
+// ---- Ampere cp.async helpers (16B at a time) --------------------------------
+static __device__ __forceinline__ void cp_async_16B(void* smem_ptr, const void* gmem_ptr, bool pred) {
+#if __CUDA_ARCH__ >= 800
+  if (pred) {
+    unsigned smem_addr = static_cast<unsigned>(__cvta_generic_to_shared(smem_ptr));
+    asm volatile(
+      "cp.async.cg.shared.global [%0], [%1], %2;\n" ::
+      "r"(smem_addr), "l"(gmem_ptr), "n"(16));
+  } else {
+    uint4 z = {0,0,0,0};
+    *reinterpret_cast<uint4*>(smem_ptr) = z;
+  }
+#else
+  if (pred) {
+    uint4 v = *reinterpret_cast<const uint4*>(gmem_ptr);
+    *reinterpret_cast<uint4*>(smem_ptr) = v;
+  } else {
+    uint4 z = {0,0,0,0};
+    *reinterpret_cast<uint4*>(smem_ptr) = z;
+  }
+#endif
+}
+
+static __device__ __forceinline__ void cp_async_commit() {
+#if __CUDA_ARCH__ >= 800
+  asm volatile("cp.async.commit_group;\n");
+#endif
+}
+static __device__ __forceinline__ void cp_async_wait_all() {
+#if __CUDA_ARCH__ >= 800
+  asm volatile("cp.async.wait_group 0;\n");
+#endif
+}
+
+// ---- Kernel: WMMA f16×f16→f32, 16x16 tiles, double-buffered over K ----------
+// Assumes blockDim.x == 32 (single warp per tile).
+__global__ void implicit_gemm_wmma_f16_acc_f32_db_ampere(
+    const half* __restrict__ A,      // [M, K], row-major
+    const half* __restrict__ B,      // [K, N], row-major
+    const half* __restrict__ Cbias,  // [M, N] optional (may be nullptr)
+    const long* __restrict__ a_inds, // [P] (rows to gather from A/C)
+    const long* __restrict__ d_inds, // [P] (rows to scatter-add into D)
+    float* __restrict__ D,           // [Q, N]
+    int M, int K, int N, int P, int Q)
+{
+    const int lane = threadIdx.x & 31;
+    const int tile_n = blockIdx.x;
+    const int n_base = tile_n * 16;
+    for (int tile_p = blockIdx.y; tile_p < (P + 15) / 16; tile_p += gridDim.y) {
+
+        __shared__ long a_row_idx[16];
+        __shared__ long d_row_idx[16];
+        if (lane < 16) {
+            const int p = tile_p * 16 + lane;
+            a_row_idx[lane] = (p < P) ? a_inds[p] : -1;
+            d_row_idx[lane] = (p < P) ? d_inds[p] : -1;
+        }
+        __syncthreads();
+
+        __shared__ __align__(16) half Asmem[2][16*16];
+        __shared__ __align__(16) half Bsmem[2][16*16];
+        __shared__ float OutTile[16*16];
+
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b_frag;
+        wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_frag;
+        wmma::fill_fragment(acc_frag, 0.0f);
+
+        // Helper to stage tiles for a given k0 into buffer `stage`
+        auto stage_load_tiles = [&](int k0, int stage_param) {
+            const int row = lane & 15;
+            const int seg = lane >> 4;
+
+            long arow = a_row_idx[row];
+            const half* gA = (arow >= 0 && arow < M) ? (A + arow * (size_t)K + k0 + seg*8) : nullptr;
+            bool predA = (arow >= 0 && arow < M) && (k0 + seg*8 + 7 < K);
+            half* sA = &Asmem[stage_param][row * 16 + seg * 8];
+            cp_async_16B((void*)sA, (const void*)gA, predA);
+
+            const int kb = k0 + row;
+            const int nb = n_base + seg*8;
+            const half* gB = (kb < K && nb < N) ? (B + (size_t)kb * N + nb) : nullptr;
+            bool predB = (kb < K) && (nb + 7 < N);
+            half* sB = &Bsmem[stage_param][row * 16 + seg * 8];
+            cp_async_16B((void*)sB, (const void*)gB, predB);
+        };
+
+        int stage = 0;
+        stage_load_tiles(/*k0=*/0, /*stage=*/stage);
+        cp_async_commit();
+        cp_async_wait_all();
+        __syncthreads();
+
+        for (int k0 = 0; k0 < K; k0 += 16) {
+            const int next_stage = stage ^ 1;
+            if (k0 + 16 < K) {
+                stage_load_tiles(k0 + 16, next_stage);
+                cp_async_commit();
+            }
+
+            wmma::load_matrix_sync(a_frag, &Asmem[stage][0], 16);
+            wmma::load_matrix_sync(b_frag, &Bsmem[stage][0], 16);
+            wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+
+            if (k0 + 16 < K) {
+                cp_async_wait_all();
+            }
+            __syncthreads();
+            stage = next_stage;
+        }
+
+        wmma::store_matrix_sync(OutTile, acc_frag, 16, wmma::mem_row_major);
+        __syncthreads();
+
+        for (int t = lane; t < 256; t += 32) {
+            int r = t / 16;
+            int c = t % 16;
+            int n = n_base + c;
+            int p = tile_p * 16 + r;
+            long arow = a_row_idx[r];
+            long drow = d_row_idx[r];
+
+            if (p < P && arow >= 0 && arow < M && drow >= 0 && drow < Q && n < N) {
+                float val = OutTile[r * 16 + c];
+                if (Cbias) {
+                    val += __half2float(Cbias[(size_t)arow * N + n]);
+                }
+                atomicAdd(&D[(size_t)drow * N + n], val);
+            }
+        }
+    }
+}
+#endif
+
 #if 0
 // BF16 WMMA kernel intentionally disabled
 __global__ void implicit_gemm_wmma_bf16_acc_f32(
@@ -232,7 +382,8 @@ std::vector<float> benchmark_implicit_gemm(
     torch::Tensor d_inds,
     torch::Tensor D,
     int method,
-    int iterations = 100)
+    int iterations = 100,
+    bool use_store = false)
 {
     int M = A.size(0);
     int K = A.size(1);
@@ -272,6 +423,55 @@ std::vector<float> benchmark_implicit_gemm(
                 C.defined() ? C.data_ptr<float>() : nullptr,
                 a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
                 D.data_ptr<float>(), M, K, N, P, Q);
+        } else if (method == WMMA_F16_ACC_F32_DB_AMPERE) {
+            implicit_gemm_wmma_f16_acc_f32_db_ampere<<<grid, dim3(32,1,1)>>>(
+                reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                D.data_ptr<float>(), M, K, N, P, Q);
+        } else if (method == WMMA_DB_AMPERE_GENERIC || method == WMMA_DB_AMPERE_GENERIC_STORE) {
+            // Use SM80 WMMA double-buffer kernel; optional non-atomic store via use_store flag
+            if (method == WMMA_DB_AMPERE_GENERIC_STORE) use_store = true;
+            auto Adtype = A.scalar_type();
+            auto Ddtype = D.scalar_type();
+            if (Adtype == at::kHalf && Ddtype == at::kFloat) {
+                if (use_store) {
+                    launch_wmma_db_ampere_f16_f32_store(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        D.data_ptr<float>(), M, K, N, P, Q);
+                } else {
+                    launch_wmma_db_ampere_f16_f32(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        D.data_ptr<float>(), M, K, N, P, Q);
+                }
+            } else if (Adtype == at::kHalf && Ddtype == at::kHalf) {
+                if (use_store) {
+                    launch_wmma_db_ampere_f16_f16_store(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        reinterpret_cast<half*>(D.data_ptr<at::Half>()), M, K, N, P, Q);
+                } else {
+                    launch_wmma_db_ampere_f16_f16(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        reinterpret_cast<half*>(D.data_ptr<at::Half>()), M, K, N, P, Q);
+                }
+            }
         }
     }
     cudaDeviceSynchronize();
@@ -303,6 +503,54 @@ std::vector<float> benchmark_implicit_gemm(
                 C.defined() ? C.data_ptr<float>() : nullptr,
                 a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
                 D.data_ptr<float>(), M, K, N, P, Q);
+        } else if (method == WMMA_F16_ACC_F32_DB_AMPERE) {
+            implicit_gemm_wmma_f16_acc_f32_db_ampere<<<grid, dim3(32,1,1)>>>(
+                reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                D.data_ptr<float>(), M, K, N, P, Q);
+        } else if (method == WMMA_DB_AMPERE_GENERIC || method == WMMA_DB_AMPERE_GENERIC_STORE) {
+            if (method == WMMA_DB_AMPERE_GENERIC_STORE) use_store = true;
+            auto Adtype = A.scalar_type();
+            auto Ddtype = D.scalar_type();
+            if (Adtype == at::kHalf && Ddtype == at::kFloat) {
+                if (use_store) {
+                    launch_wmma_db_ampere_f16_f32_store(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        D.data_ptr<float>(), M, K, N, P, Q);
+                } else {
+                    launch_wmma_db_ampere_f16_f32(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        D.data_ptr<float>(), M, K, N, P, Q);
+                }
+            } else if (Adtype == at::kHalf && Ddtype == at::kHalf) {
+                if (use_store) {
+                    launch_wmma_db_ampere_f16_f16_store(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        reinterpret_cast<half*>(D.data_ptr<at::Half>()), M, K, N, P, Q);
+                } else {
+                    launch_wmma_db_ampere_f16_f16(
+                        grid, dim3(32,1,1), nullptr,
+                        reinterpret_cast<half*>(A.data_ptr<at::Half>()),
+                        reinterpret_cast<half*>(B.data_ptr<at::Half>()),
+                        C.defined() ? reinterpret_cast<half*>(C.data_ptr<at::Half>()) : nullptr,
+                        a_inds.data_ptr<long>(), d_inds.data_ptr<long>(),
+                        reinterpret_cast<half*>(D.data_ptr<at::Half>()), M, K, N, P, Q);
+                }
+            }
         }
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
@@ -318,5 +566,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Benchmark implicit GEMM: D[d]=A[a]@B + C[a]",
           py::arg("A"), py::arg("B"), py::arg("C"),
           py::arg("a_inds"), py::arg("d_inds"), py::arg("D"),
-          py::arg("method"), py::arg("iterations") = 100);
+          py::arg("method"), py::arg("iterations") = 100, py::arg("use_store") = false);
 }

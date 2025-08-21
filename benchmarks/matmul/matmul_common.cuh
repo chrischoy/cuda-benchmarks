@@ -8,7 +8,10 @@ namespace matmul {
 enum MatmulMethod {
     NAIVE_F32 = 0,
     WMMA_F16_ACC_F32 = 1,
-    F32_PTX_V4 = 2
+    F32_PTX_V4 = 2,
+    WMMA_F16_ACC_F32_DB_AMPERE = 3,
+    WMMA_DB_AMPERE_GENERIC = 4,
+    WMMA_DB_AMPERE_GENERIC_STORE = 5
 };
 
 __host__ inline dim3 calculate_block_size(int method) {
@@ -16,6 +19,10 @@ __host__ inline dim3 calculate_block_size(int method) {
         case NAIVE_F32:
             return dim3(128, 1, 1);
         case WMMA_F16_ACC_F32:
+            return dim3(32, 1, 1); // one warp per 16x16 tile
+        case WMMA_F16_ACC_F32_DB_AMPERE:
+        case WMMA_DB_AMPERE_GENERIC:
+        case WMMA_DB_AMPERE_GENERIC_STORE:
             return dim3(32, 1, 1); // one warp per 16x16 tile
         case F32_PTX_V4:
             return dim3(128, 1, 1);
@@ -36,6 +43,14 @@ __host__ inline dim3 calculate_grid_size(int P, int N, int method, dim3 block) {
             int grid_x = (N + 16 - 1) / 16;
             int grid_y = (P + 16 - 1) / 16;
             // Cap grid_y moderately to avoid extremely large grids; kernel loops over tiles
+            if (grid_y > 4096) grid_y = 4096;
+            return dim3(grid_x, grid_y, 1);
+        }
+        case WMMA_F16_ACC_F32_DB_AMPERE:
+        case WMMA_DB_AMPERE_GENERIC:
+        case WMMA_DB_AMPERE_GENERIC_STORE: {
+            int grid_x = (N + 16 - 1) / 16;
+            int grid_y = (P + 16 - 1) / 16;
             if (grid_y > 4096) grid_y = 4096;
             return dim3(grid_x, grid_y, 1);
         }
