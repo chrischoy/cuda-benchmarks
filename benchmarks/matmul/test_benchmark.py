@@ -30,6 +30,7 @@ METHODS = {
     3: "WMMA_F16_ACC_F32_DB_AMPERE",
     4: "WMMA_DB_AMPERE_GENERIC_ATOMIC",
     5: "WMMA_DB_AMPERE_GENERIC_STORE",
+    6: "CUB_F32_BLOCKLOAD",
 }
 NS = [2**14, 2**18, 2**20]
 CS = [32, 64, 128, 256, 512]
@@ -49,6 +50,9 @@ def run_correctness_small(verbose=True):
     A16 = A32.half()
     B16 = B32.half()
     C16 = C32.half()
+    Abf = A32.bfloat16()
+    Bbf = B32.bfloat16()
+    Cbf = C32.bfloat16()
 
     a_inds = torch.randperm(M, device="cuda", dtype=torch.long)[:P]
     d_inds = torch.randperm(Q, device="cuda", dtype=torch.long)[:P]
@@ -95,6 +99,24 @@ def run_correctness_small(verbose=True):
         A16, B16, C16, a_inds, d_inds, D4h, method=4, iterations=1
     )
 
+    # CUB_F32_BLOCKLOAD (f16->f32)
+    D6 = torch.zeros_like(D_ref)
+    ig.benchmark_implicit_gemm(
+        A16, B16, C16, a_inds, d_inds, D6, method=6, iterations=1
+    )
+
+    # CUB_F32_BLOCKLOAD (bf16->f32)
+    D6bf = torch.zeros_like(D_ref)
+    ig.benchmark_implicit_gemm(
+        Abf, Bbf, Cbf, a_inds, d_inds, D6bf, method=6, iterations=1
+    )
+
+    # CUB_F32_BLOCKLOAD (bf16->bf16)
+    D6bf16 = torch.zeros(Q, Nout, device="cuda", dtype=torch.bfloat16)
+    ig.benchmark_implicit_gemm(
+        Abf, Bbf, Cbf, a_inds, d_inds, D6bf16, method=6, iterations=1
+    )
+
     # BF16 path disabled in this build
     ok0 = torch.allclose(D0, D_ref, atol=1e-3, rtol=1e-3)
     ok1 = torch.allclose(D1, D_ref, atol=2e-2, rtol=2e-2)  # relaxed for fp16
@@ -102,6 +124,9 @@ def run_correctness_small(verbose=True):
     ok3 = torch.allclose(D3, D_ref, atol=2e-2, rtol=2e-2)
     ok4f = torch.allclose(D4f, D_ref, atol=2e-2, rtol=2e-2)
     ok4h = torch.allclose(D4h.float(), D_ref, atol=3e-2, rtol=3e-2)
+    ok6 = torch.allclose(D6, D_ref, atol=2e-2, rtol=2e-2)
+    ok6bf = torch.allclose(D6bf, D_ref, atol=2e-2, rtol=2e-2)
+    ok6bf16 = torch.allclose(D6bf16.float(), D_ref, atol=3e-2, rtol=3e-2)
     if verbose:
         print(f"NAIVE_F32 correctness: {'OK' if ok0 else 'FAIL'}")
         print(f"WMMA_F16_ACC_F32 correctness: {'OK' if ok1 else 'FAIL'}")
@@ -116,8 +141,20 @@ def run_correctness_small(verbose=True):
             f"WMMA_DB_AMPERE_GENERIC f16->f16 correctness: {'OK' if ok4h else 'FAIL'} | max_abs={diff4h.max().item():.4e}"
         )
         print(f"WMMA_DB_AMPERE_GENERIC bf16 paths: SKIP")
+        diff6 = (D6 - D_ref).abs()
+        print(
+            f"CUB_F32_BLOCKLOAD f16->f32 correctness: {'OK' if ok6 else 'FAIL'} | max_abs={diff6.max().item():.4e}"
+        )
+        diff6bf = (D6bf - D_ref).abs()
+        print(
+            f"CUB_F32_BLOCKLOAD bf16->f32 correctness: {'OK' if ok6bf else 'FAIL'} | max_abs={diff6bf.max().item():.4e}"
+        )
+        diff6bf16 = (D6bf16.float() - D_ref).abs()
+        print(
+            f"CUB_F32_BLOCKLOAD bf16->bf16 correctness: {'OK' if ok6bf16 else 'FAIL'} | max_abs={diff6bf16.max().item():.4e}"
+        )
     # Only gate on established methods; method 4 is experimental and reported above
-    return ok0 and ok1 and ok2 and ok3
+    return ok0 and ok1 and ok2 and ok3 and ok6 and ok6bf and ok6bf16
 
 
 def run_correctness_large_unique(
@@ -179,143 +216,139 @@ def run_correctness_large_unique(
     return ok
 
 
-def benchmark_suite(verbose=False):
+def benchmark_suite(ns=NS, cs=CS, iterations=10, unique=True, verbose=False):
     results = {}
-    for Nrows in NS:
-        for Ccols in CS:
+    for Nrows in ns:
+        for Ccols in cs:
             M, K, Nout = Nrows, Ccols, Ccols
-            P, Q = Nrows, Nrows  # large-scale: gather/scatter ~ rows
-            if verbose:
-                print(
-                    f"\nBenchmarking rows={Nrows}, cols={Ccols} (A[{M},{K}], B[{K},{Nout}], C[{M},{Nout}], D[{Q},{Nout}])"
-                )
+            S, Q = Nrows, Nrows
 
             # Build tensors
             A32 = torch.randn(M, K, device="cuda", dtype=torch.float32)
             B32 = torch.randn(K, Nout, device="cuda", dtype=torch.float32)
             C32 = torch.randn(M, Nout, device="cuda", dtype=torch.float32)
-            A16 = A32.half()
-            B16 = B32.half()
-            C16 = C32.half()
-            a_inds = torch.randint(0, M, (P,), device="cuda", dtype=torch.long)
-            d_inds = torch.randint(0, Q, (P,), device="cuda", dtype=torch.long)
+            A16, B16, C16 = A32.half(), B32.half(), C32.half()
+
+            # Indices
+            if unique:
+                a_inds = torch.randperm(M, device="cuda", dtype=torch.long)[:S]
+                d_inds = torch.randperm(Q, device="cuda", dtype=torch.long)[:S]
+            else:
+                a_inds = torch.randint(0, M, (S,), device="cuda", dtype=torch.long)
+                d_inds = torch.randint(0, Q, (S,), device="cuda", dtype=torch.long)
 
             per_size = {}
 
-            # NAIVE_F32
+            # 0: NAIVE_F32
             D0 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times0 = ig.benchmark_implicit_gemm(
-                A32, B32, C32, a_inds, d_inds, D0, method=0, iterations=10
+            t0 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A32, B32, C32, a_inds, d_inds, D0, method=0, iterations=iterations
+                )
             )
-            t0 = np.array(times0)
             per_size[0] = {
                 "method": METHODS[0],
                 "mean_ms": float(t0.mean()),
                 "std_ms": float(t0.std()),
                 "min_ms": float(t0.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[0]}: mean {per_size[0]['mean_ms']:.3f} ms, min {per_size[0]['min_ms']:.3f} ms"
-                )
 
-            # WMMA_F16_ACC_F32
+            # 1: WMMA_F16_ACC_F32
             D1 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times1 = ig.benchmark_implicit_gemm(
-                A16, B16, C16, a_inds, d_inds, D1, method=1, iterations=10
+            t1 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A16, B16, C16, a_inds, d_inds, D1, method=1, iterations=iterations
+                )
             )
-            t1 = np.array(times1)
             per_size[1] = {
                 "method": METHODS[1],
                 "mean_ms": float(t1.mean()),
                 "std_ms": float(t1.std()),
                 "min_ms": float(t1.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[1]}: mean {per_size[1]['mean_ms']:.3f} ms, min {per_size[1]['min_ms']:.3f} ms"
-                )
 
-            # F32_PTX_V4
+            # 2: F32_PTX_V4
             D2 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times2 = ig.benchmark_implicit_gemm(
-                A32, B32, C32, a_inds, d_inds, D2, method=2, iterations=10
+            t2 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A32, B32, C32, a_inds, d_inds, D2, method=2, iterations=iterations
+                )
             )
-            t2 = np.array(times2)
             per_size[2] = {
                 "method": METHODS[2],
                 "mean_ms": float(t2.mean()),
                 "std_ms": float(t2.std()),
                 "min_ms": float(t2.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[2]}: mean {per_size[2]['mean_ms']:.3f} ms, min {per_size[2]['min_ms']:.3f} ms"
-                )
 
-            # WMMA_F16_ACC_F32_DB_AMPERE
+            # 3: WMMA_F16_ACC_F32_DB_AMPERE
             D3 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times3 = ig.benchmark_implicit_gemm(
-                A16, B16, C16, a_inds, d_inds, D3, method=3, iterations=10
+            t3 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A16, B16, C16, a_inds, d_inds, D3, method=3, iterations=iterations
+                )
             )
-            t3 = np.array(times3)
             per_size[3] = {
                 "method": METHODS[3],
                 "mean_ms": float(t3.mean()),
                 "std_ms": float(t3.std()),
                 "min_ms": float(t3.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[3]}: mean {per_size[3]['mean_ms']:.3f} ms, min {per_size[3]['min_ms']:.3f} ms"
-                )
 
-            # WMMA_DB_AMPERE_GENERIC (f16->f32, atomic)
+            # 4: WMMA_DB_AMPERE_GENERIC (f16->f32, atomic)
             D4 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times4 = ig.benchmark_implicit_gemm(
-                A16, B16, C16, a_inds, d_inds, D4, method=4, iterations=10
+            t4 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A16, B16, C16, a_inds, d_inds, D4, method=4, iterations=iterations
+                )
             )
-            t4 = np.array(times4)
             per_size[4] = {
                 "method": METHODS[4],
                 "mean_ms": float(t4.mean()),
                 "std_ms": float(t4.std()),
                 "min_ms": float(t4.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[4]}: mean {per_size[4]['mean_ms']:.3f} ms, min {per_size[4]['min_ms']:.3f} ms"
-                )
 
-            # WMMA_DB_AMPERE_GENERIC (f16->f32, store)
+            # 5: WMMA_DB_AMPERE_GENERIC (f16->f32, store)
             D5 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            times5 = ig.benchmark_implicit_gemm(
-                A16, B16, C16, a_inds, d_inds, D5, method=5, iterations=10
+            t5 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A16, B16, C16, a_inds, d_inds, D5, method=5, iterations=iterations
+                )
             )
-            t5 = np.array(times5)
             per_size[5] = {
                 "method": METHODS[5],
                 "mean_ms": float(t5.mean()),
                 "std_ms": float(t5.std()),
                 "min_ms": float(t5.min()),
             }
-            if verbose:
-                print(
-                    f"  {METHODS[5]}: mean {per_size[5]['mean_ms']:.3f} ms, min {per_size[5]['min_ms']:.3f} ms"
+
+            # 6: CUB_F32_BLOCKLOAD (f16->f32)
+            D6 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
+            t6 = np.array(
+                ig.benchmark_implicit_gemm(
+                    A16, B16, C16, a_inds, d_inds, D6, method=6, iterations=iterations
                 )
+            )
+            per_size[6] = {
+                "method": METHODS[6],
+                "mean_ms": float(t6.mean()),
+                "std_ms": float(t6.std()),
+                "min_ms": float(t6.min()),
+            }
 
             results[f"N{Nrows}_C{Ccols}"] = per_size
+
+            if verbose:
+                print(
+                    f"Benchmark N={Nrows} C={Ccols} | "
+                    + ", ".join(
+                        f"{METHODS[m]}: {per_size[m]['mean_ms']:.3f} ms (min {per_size[m]['min_ms']:.3f})"
+                        for m in sorted(per_size.keys())
+                    )
+                )
+
     return results
-
-
-def _parse_int_list_env(var_name, default_list):
-    s = os.environ.get(var_name, None)
-    if not s:
-        return default_list
-    try:
-        return [int(x.strip()) for x in s.split(",") if x.strip()]
-    except Exception:
-        return default_list
 
 
 def main():
@@ -339,7 +372,7 @@ def main():
     p_large.add_argument(
         "--subset", type=int, default=int(os.environ.get("IG_SUBSET", 2**14))
     )
-    p_large.add_argument("--method", type=int, choices=[3, 4, 5], default=3)
+    p_large.add_argument("--method", type=int, choices=[3, 4, 5, 6], default=3)
     p_large.add_argument("--verbose", action="store_true")
 
     # Benchmarks
@@ -394,7 +427,6 @@ def main():
     bench_iters = args.iters
     out = args.out
 
-    # Accumulate results under size keys
     aggregated = {
         "metadata": {
             "timestamp": datetime.datetime.now().isoformat(),
@@ -405,7 +437,6 @@ def main():
         "methods": METHODS,
         "results": {},
     }
-    # Merge existing file if present
     if os.path.exists(out):
         try:
             with open(out, "r") as f:
@@ -415,110 +446,11 @@ def main():
         except Exception:
             pass
 
-    for Nrows in ns:
-        for Ccols in cs:
-            M, K, Nout = Nrows, Ccols, Ccols
-            S, Q = Nrows, Nrows
-
-            # Build tensors
-            A32 = torch.randn(M, K, device="cuda", dtype=torch.float32)
-            B32 = torch.randn(K, Nout, device="cuda", dtype=torch.float32)
-            C32 = torch.randn(M, Nout, device="cuda", dtype=torch.float32)
-            A16, B16, C16 = A32.half(), B32.half(), C32.half()
-            # Unique indices
-            a_inds = torch.randperm(M, device="cuda", dtype=torch.long)[:S]
-            d_inds = torch.randperm(Q, device="cuda", dtype=torch.long)[:S]
-
-            per_size = {}
-
-            # 0
-            D0 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t0 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A32, B32, C32, a_inds, d_inds, D0, method=0, iterations=bench_iters
-                )
-            )
-            per_size[0] = {
-                "method": METHODS[0],
-                "mean_ms": float(t0.mean()),
-                "std_ms": float(t0.std()),
-                "min_ms": float(t0.min()),
-            }
-            # 1
-            D1 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t1 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A16, B16, C16, a_inds, d_inds, D1, method=1, iterations=bench_iters
-                )
-            )
-            per_size[1] = {
-                "method": METHODS[1],
-                "mean_ms": float(t1.mean()),
-                "std_ms": float(t1.std()),
-                "min_ms": float(t1.min()),
-            }
-            # 2
-            D2 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t2 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A32, B32, C32, a_inds, d_inds, D2, method=2, iterations=bench_iters
-                )
-            )
-            per_size[2] = {
-                "method": METHODS[2],
-                "mean_ms": float(t2.mean()),
-                "std_ms": float(t2.std()),
-                "min_ms": float(t2.min()),
-            }
-            # 3
-            D3 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t3 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A16, B16, C16, a_inds, d_inds, D3, method=3, iterations=bench_iters
-                )
-            )
-            per_size[3] = {
-                "method": METHODS[3],
-                "mean_ms": float(t3.mean()),
-                "std_ms": float(t3.std()),
-                "min_ms": float(t3.min()),
-            }
-            # 4
-            D4 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t4 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A16, B16, C16, a_inds, d_inds, D4, method=4, iterations=bench_iters
-                )
-            )
-            per_size[4] = {
-                "method": METHODS[4],
-                "mean_ms": float(t4.mean()),
-                "std_ms": float(t4.std()),
-                "min_ms": float(t4.min()),
-            }
-
-            # WMMA_DB_AMPERE_GENERIC (f16->f32, store)
-            D5 = torch.zeros(Q, Nout, device="cuda", dtype=torch.float32)
-            t5 = np.array(
-                ig.benchmark_implicit_gemm(
-                    A16, B16, C16, a_inds, d_inds, D5, method=5, iterations=bench_iters
-                )
-            )
-            per_size[5] = {
-                "method": METHODS[5],
-                "mean_ms": float(t5.mean()),
-                "std_ms": float(t5.std()),
-                "min_ms": float(t5.min()),
-            }
-
-            aggregated["results"][f"N{Nrows}_C{Ccols}"] = per_size
-            print(
-                f"Benchmark N={Nrows} C={Ccols} | "
-                + ", ".join(
-                    f"{METHODS[m]}: {per_size[m]['mean_ms']:.3f} ms (min {per_size[m]['min_ms']:.3f})"
-                    for m in sorted(per_size.keys())
-                )
-            )
+    # Run consolidated benchmark suite once for all sizes
+    suite_results = benchmark_suite(
+        ns=ns, cs=cs, iterations=bench_iters, unique=True, verbose=True
+    )
+    aggregated["results"].update(suite_results)
 
     out_dir = os.path.dirname(out)
     if out_dir and not os.path.exists(out_dir):

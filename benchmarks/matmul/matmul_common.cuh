@@ -11,7 +11,8 @@ enum MatmulMethod {
     F32_PTX_V4 = 2,
     WMMA_F16_ACC_F32_DB_AMPERE = 3,
     WMMA_DB_AMPERE_GENERIC = 4,
-    WMMA_DB_AMPERE_GENERIC_STORE = 5
+    WMMA_DB_AMPERE_GENERIC_STORE = 5,
+    CUB_F32_BLOCKLOAD = 6
 };
 
 __host__ inline dim3 calculate_block_size(int method) {
@@ -25,6 +26,8 @@ __host__ inline dim3 calculate_block_size(int method) {
         case WMMA_DB_AMPERE_GENERIC_STORE:
             return dim3(32, 1, 1); // one warp per 16x16 tile
         case F32_PTX_V4:
+            return dim3(128, 1, 1);
+        case CUB_F32_BLOCKLOAD:
             return dim3(128, 1, 1);
         default:
             return dim3(128, 1, 1);
@@ -56,6 +59,13 @@ __host__ inline dim3 calculate_grid_size(int P, int N, int method, dim3 block) {
         }
         case F32_PTX_V4: {
             int elems_per_thread = 4; // each thread computes 4 columns
+            int grid_x = (N + (block.x * elems_per_thread) - 1) / (block.x * elems_per_thread);
+            int grid_y = P;
+            if (grid_y > 65535) grid_y = 65535;
+            return dim3(grid_x, grid_y, 1);
+        }
+        case CUB_F32_BLOCKLOAD: {
+            int elems_per_thread = 4; // match kernel ITEMS_PER_THREAD
             int grid_x = (N + (block.x * elems_per_thread) - 1) / (block.x * elems_per_thread);
             int grid_y = P;
             if (grid_y > 65535) grid_y = 65535;

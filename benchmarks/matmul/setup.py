@@ -7,7 +7,10 @@ setup(
         CUDAExtension(
             name="implicit_gemm_benchmark",
             sources=["matmul.cu", "matmul_wmma_sm80.cu"],
-            include_dirs=["../../include"],
+            include_dirs=[
+                "../../include",
+                "../../3rdparty/cccl",
+            ],
             extra_compile_args={
                 "nvcc": [
                     "-O2",
