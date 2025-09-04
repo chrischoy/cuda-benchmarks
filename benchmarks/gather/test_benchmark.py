@@ -8,6 +8,20 @@ import datetime
 import os
 import matrix_gather_benchmark
 
+# Optional CuTe-based gather implementation
+try:
+    import cute_gather  # when executed from benchmarks/gather/
+
+    _CUTE_GATHER_AVAILABLE = True
+except Exception:
+    try:
+        # fallback when executed from repo root
+        from benchmarks.gather import cute_gather  # type: ignore
+
+        _CUTE_GATHER_AVAILABLE = True
+    except Exception:
+        _CUTE_GATHER_AVAILABLE = False
+
 
 def generate_gather_indices(n_total, n_gather, device="cuda"):
     """Generate sorted, unique gather indices for testing"""
@@ -77,6 +91,8 @@ def test_gather_correctness_large_matrix(verbose=True):
         10: "CUB block gather",
         11: "CUB warp gather",
     }
+    if _CUTE_GATHER_AVAILABLE:
+        methods[12] = "CuTe TV gather"
 
     # Create input matrix with known values (use constant value for easier verification)
     input_value = 2.0
@@ -108,15 +124,27 @@ def test_gather_correctness_large_matrix(verbose=True):
 
             try:
                 # Run the gather operation with return_output=True
-                times, output_matrix = (
-                    matrix_gather_benchmark.benchmark_matrix_gathering(
+                if method_id == 12:
+                    if not _CUTE_GATHER_AVAILABLE:
+                        raise RuntimeError(
+                            "CuTe gather not available (missing CUTLASS DSL)"
+                        )
+                    times, output_matrix = cute_gather.benchmark_matrix_gathering_cute(
                         input_matrix,
                         gather_indices,
-                        method_id,
                         iterations=1,
                         return_output=True,
                     )
-                )
+                else:
+                    times, output_matrix = (
+                        matrix_gather_benchmark.benchmark_matrix_gathering(
+                            input_matrix,
+                            gather_indices,
+                            method_id,
+                            iterations=1,
+                            return_output=True,
+                        )
+                    )
 
                 # Check if the operation completed successfully
                 if len(times) == 1 and times[0] > 0:
@@ -245,6 +273,8 @@ def test_comprehensive_matrix_gathering(verbose=True):
         10: "CUB block gather",
         11: "CUB warp gather",
     }
+    if _CUTE_GATHER_AVAILABLE:
+        methods[12] = "CuTe TV gather"
 
     results = {}
 
@@ -272,9 +302,21 @@ def test_comprehensive_matrix_gathering(verbose=True):
 
                 try:
                     # Run benchmark with fewer iterations for quick test
-                    times, _ = matrix_gather_benchmark.benchmark_matrix_gathering(
-                        input_matrix, gather_indices, method_id, iterations=20
-                    )
+                    if method_id == 12:
+                        if not _CUTE_GATHER_AVAILABLE:
+                            raise RuntimeError(
+                                "CuTe gather not available (missing CUTLASS DSL)"
+                            )
+                        times, _ = cute_gather.benchmark_matrix_gathering_cute(
+                            input_matrix,
+                            gather_indices,
+                            iterations=20,
+                            return_output=False,
+                        )
+                    else:
+                        times, _ = matrix_gather_benchmark.benchmark_matrix_gathering(
+                            input_matrix, gather_indices, method_id, iterations=20
+                        )
 
                     # Calculate statistics
                     times_np = np.array(times)
@@ -495,6 +537,7 @@ def main():
             print(
                 f"\n⚠️  Warning: {len(failed_gather_methods)} gather tests failed correctness test!"
             )
+            print(failed_gather_methods)
             success = False
         else:
             print(f"\n✓ All gather methods passed correctness test for large matrix!")
